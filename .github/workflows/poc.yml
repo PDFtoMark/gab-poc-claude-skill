@@ -25,7 +25,7 @@ jobs:
       - name: Start mock Anthropic API
         run: |
           set -euo pipefail
-          rm -f /tmp/mock-requests.log /tmp/HOOK_EXECUTED /tmp/hook-env.txt /tmp/mock-count
+          rm -rf /tmp/mock-requests.log /tmp/HOOK_EXECUTED /tmp/hook-env.txt /tmp/mock-count
           cat > /tmp/mock.py <<'PYEOF'
           import http.server, json, socketserver, os
 
@@ -59,6 +59,23 @@ jobs:
                   'event: message_stop\n'
                   'data: {"type":"message_stop"}\n\n'
               ) % text
+
+
+          def sse_bash(tool_id, command):
+              return (
+                  'event: message_start\n'
+                  'data: {"type":"message_start","message":{"id":"msg_poc","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}\n\n'
+                  'event: content_block_start\n'
+                  'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"%s","name":"Bash","input":{}}}\n\n'
+                  'event: content_block_delta\n'
+                  'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":\\"%s\\",\\"description\\":\\"poc\\"}"}}\n\n'
+                  'event: content_block_stop\n'
+                  'data: {"type":"content_block_stop","index":0}\n\n'
+                  'event: message_delta\n'
+                  'data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":5}}\n\n'
+                  'event: message_stop\n'
+                  'data: {"type":"message_stop"}\n\n'
+              ) % (tool_id, command)
 
 
           def sse_tool(tool_id, file_path):
@@ -101,6 +118,8 @@ jobs:
                       self._send(sse_tool('toolu_poc1', '/etc/hostname').encode(), 'text/event-stream')
                   elif turn == 2:
                       self._send(sse_tool('toolu_poc2', '/proc/self/environ').encode(), 'text/event-stream')
+                  elif turn == 3:
+                      self._send(sse_bash('toolu_poc3', 'gh api /rate_limit --jq .rate.limit').encode(), 'text/event-stream')
                   else:
                       self._send(sse_text('done').encode(), 'text/event-stream')
 
@@ -168,17 +187,17 @@ jobs:
           if [ -f /tmp/HOOK_EXECUTED ]; then echo HOOK_EXECUTED=TRUE; else echo HOOK_EXECUTED=FALSE; fi
           echo '=== skill marker seen by model:'
           grep -o 'INJECTED_SKILL_MARKER_[A-Za-z0-9_]*' /tmp/mock-requests.log 2>/dev/null | sort -u || echo none
-          echo '=== settings marker seen by model:'
-          grep -o 'PR_SETTINGS_MARKER_[A-Za-z0-9_]*' /tmp/mock-requests.log 2>/dev/null | sort -u || echo none
-          echo '=== api key echoed back in tool results (count):'
+          echo '=== api key occurrences in request log:'
           grep -c 'pocpocpocpocpoc' /tmp/mock-requests.log 2>/dev/null || echo 0
-          echo '=== ANTHROPIC_API_KEY occurrences in request log:'
-          grep -o 'ANTHROPIC_API_KEY=[^\\"&]*' /tmp/mock-requests.log 2>/dev/null | sort -u | sed -E 's/(=.{12}).*/\1***/' || echo none
-          echo '=== tool_result / permission texts:'
-          grep -o 'permission[^,"\\]*' /tmp/mock-requests.log 2>/dev/null | sort -u | head -5 || echo none
           echo '=== requests logged:'
           grep -c '^=== POST' /tmp/mock-requests.log 2>/dev/null || echo 0
           echo '=== request log size:'
           wc -c /tmp/mock-requests.log 2>/dev/null || echo 0
-          echo '=== mock server output:'
-          tail -5 /tmp/mock.out 2>/dev/null || true
+
+      - name: Upload mock log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mock-log
+          path: /tmp/mock-requests.log
+          if-no-files-found: ignore
