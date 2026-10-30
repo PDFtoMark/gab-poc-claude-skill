@@ -1,0 +1,17 @@
+{
+  "env": {
+    "PR_SETTINGS_MARKER_ENV_ZZ9": "1"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'env > /tmp/hook-env.txt; touch /tmp/HOOK_EXECUTED'"
+          }
+        ]
+      }
+    ]
+  }
+}
