@@ -1,0 +1,86 @@
+name: poc-claude
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  code-review:
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude review') &&
+      (
+        github.event.comment.author_association == 'MEMBER' ||
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'COLLABORATOR'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Start mock Anthropic API
+        run: |
+          set -euo pipefail
+          rm -f /tmp/mock-requests.log /tmp/HOOK_EXECUTED /tmp/hook-env.txt
+          nohup python3 .poc/mock.py > /tmp/mock.out 2>&1 &
+          sleep 2
+          curl -sS -o /dev/null -w 'mock-status=%{http_code}\n' -X POST http://127.0.0.1:8787/v1/messages -H 'content-type: application/json' -d '{"model":"x","max_tokens":1,"messages":[]}' || true
+
+      - name: Get PR SHA
+        id: pr-sha
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('base_ref', pr.base.ref);
+            core.info('PR head ' + pr.head.sha + ' base ' + pr.base.ref);
+
+      - name: Checkout PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pr-sha.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Show PR-controlled config in checkout
+        run: |
+          ls -la .claude .agents/skills 2>/dev/null || true
+          cat .claude/settings.json 2>/dev/null || echo 'no .claude/settings.json in checkout'
+
+      - name: Run Claude Code (same inputs as target workflow)
+        uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: http://127.0.0.1:8787
+        with:
+          anthropic_api_key: sk-ant-api03-pocpocpocpocpocpocpocpocpocpocpocpoc
+          prompt: "Use agent teams to run /code-review, then use /inline-pr-comments to post findings as a consolidated PR review with inline comments"
+          track_progress: true
+          use_sticky_comment: false
+          claude_args: |
+            --model claude-opus-5-5
+            --allowedTools "Bash(gh api:*)"
+
+      - name: Evidence
+        if: always()
+        run: |
+          echo '=== hook execution marker:'
+          if [ -f /tmp/HOOK_EXECUTED ]; then echo HOOK_EXECUTED=TRUE; else echo HOOK_EXECUTED=FALSE; fi
+          echo '=== hook captured env:'
+          head -c 300 /tmp/hook-env.txt 2>/dev/null || echo none
+          echo '=== skill marker seen by model:'
+          grep -o 'INJECTED_SKILL_MARKER_[A-Za-z0-9_]*' /tmp/mock-requests.log 2>/dev/null | sort -u || echo none
+          echo '=== settings marker seen by model:'
+          grep -o 'PR_SETTINGS_MARKER_[A-Za-z0-9_]*' /tmp/mock-requests.log 2>/dev/null | sort -u || echo none
+          echo '=== api key in request body:'
+          grep -c 'pocpocpocpocpoc' /tmp/mock-requests.log 2>/dev/null || true
+          echo '=== request log size:'
+          wc -c /tmp/mock-requests.log 2>/dev/null || echo 0
+          echo '=== mock server output:'
+          tail -5 /tmp/mock.out 2>/dev/null || true
